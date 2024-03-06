@@ -9,11 +9,13 @@ import torch.nn.functional as F
 import torch.utils.checkpoint as cp
 from mmcv.cnn import build_norm_layer
 from mmcv.cnn.bricks.transformer import FFN, build_dropout
-from mmcv.cnn.utils.weight_init import (constant_init, trunc_normal_,
-                                        trunc_normal_init)
-from mmcv.runner import (BaseModule, CheckpointLoader, ModuleList,
-                         load_state_dict)
-from mmcv.utils import to_2tuple
+# from mmcv.cnn.utils.weight_init import (constant_init, trunc_normal_,
+#                                         trunc_normal_init)
+# from mmcv.runner import (BaseModule, CheckpointLoader, ModuleList,
+#                          load_state_dict)
+from mmengine.model.base_module import BaseModule
+from mmengine.runner.checkpoint import load_state_dict
+# from mmcv.utils import to_2tuple
 import math
 
 class LayerNorm(nn.Module):
@@ -39,7 +41,7 @@ class LayerNorm(nn.Module):
             u = x.mean(1, keepdim=True)
             s = (x - u).pow(2).mean(1, keepdim=True)
             x = (x - u) / torch.sqrt(s + self.eps)
-            x = self.weight[:, None, None] * x + self.bias[:, None, None]
+            x = self.weight[:, None, None].contiguous() * x + self.bias[:, None, None].contiguous()
             return x
 
 
@@ -56,9 +58,9 @@ class MLP(nn.Module):
     def forward(self, x):
         x = self.norm(x)
         x = self.fc1(x)
-        x = x.permute(0, 3, 1, 2)
+        x = x.permute(0, 3, 1, 2).contiguous()
         x = self.pos(x) + x
-        x = x.permute(0, 2, 3, 1)
+        x = x.permute(0, 2, 3, 1).contiguous()
         x = self.act(x)
         x = self.fc2(x)
 
@@ -103,32 +105,32 @@ class attention(nn.Module):
         x_e = self.norm_e(x_e)
         if self.window != 0:
             short_cut = torch.cat([x,x_e],dim=3)##########
-            short_cut = short_cut.permute(0,3,1,2)#############
+            short_cut = short_cut.permute(0,3,1,2).contiguous()#############
 
         q = self.q(x)   
         cutted_x = self.q_cut(x)     
-        x = self.l(x).permute(0, 3, 1, 2)
+        x = self.l(x).permute(0, 3, 1, 2).contiguous()
         x = self.act(x)
             
         a = self.conv(x)
-        a = a.permute(0, 2, 3, 1)
+        a = a.permute(0, 2, 3, 1).contiguous()
         a = self.a(a)
 
         if self.window != 0:
-            b = x.permute(0, 2, 3, 1)
+            b = x.permute(0, 2, 3, 1).contiguous()
             kv = self.kv(b)
-            kv = kv.reshape(B, H*W, 2, self.num_head, C // self.num_head // 2).permute(2, 0, 3, 1, 4)
+            kv = kv.reshape(B, H*W, 2, self.num_head, C // self.num_head // 2).permute(2, 0, 3, 1, 4).contiguous()
             k, v = kv.unbind(0)
-            short_cut = self.pool(short_cut).permute(0,2,3,1)
+            short_cut = self.pool(short_cut).permute(0,2,3,1).contiguous()
             short_cut = self.short_cut_linear(short_cut)
-            short_cut = short_cut.reshape(B, -1, self.num_head, C // self.num_head // 2).permute(0, 2, 1, 3)
+            short_cut = short_cut.reshape(B, -1, self.num_head, C // self.num_head // 2).permute(0, 2, 1, 3).contiguous()
             m = short_cut
-            attn = (m * (C // self.num_head // 2) ** -0.5) @ k.transpose(-2, -1) 
+            attn = (m * (C // self.num_head // 2) ** -0.5) @ (k.transpose(-2, -1).contiguous())
             attn = attn.softmax(dim=-1)
-            attn = (attn @ v).reshape(B, self.num_head, self.window, self.window, C // self.num_head // 2).permute(0, 1, 4, 2, 3).reshape(B, C // 2, self.window, self.window)
-            attn = F.interpolate(attn, (H, W), mode='bilinear', align_corners=False).permute(0, 2, 3, 1)
+            attn = (attn @ v).reshape(B, self.num_head, self.window, self.window, C // self.num_head // 2).permute(0, 1, 4, 2, 3).reshape(B, C // 2, self.window, self.window).contiguous()
+            attn = F.interpolate(attn, (H, W), mode='bilinear', align_corners=False).permute(0, 2, 3, 1).contiguous()
         
-        x_e = self.e_back(self.e_conv(self.e_fore(x_e).permute(0, 3, 1, 2)).permute(0, 2, 3, 1))
+        x_e = self.e_back(self.e_conv(self.e_fore(x_e).permute(0, 3, 1, 2)).permute(0, 2, 3, 1)).contiguous()
         cutted_x = cutted_x * x_e
         x = q * a
 
@@ -241,10 +243,10 @@ class DFormer(BaseModule):
             cur += depths[i]
 
        
-        for i in out_indices:
-            layer = LayerNorm(dims[i], eps=1e-6, data_format="channels_first")
-            layer_name = f'norm{i}'
-            self.add_module(layer_name, layer)
+        # for i in out_indices:
+        #     layer = LayerNorm(dims[i], eps=1e-6, data_format="channels_first")
+        #     layer_name = f'norm{i}'
+        #     self.add_module(layer_name, layer)
 
 
     def init_weights(self,pretrained):
@@ -285,12 +287,12 @@ class DFormer(BaseModule):
             x = self.downsample_layers[i](x)
             x_e = self.downsample_layers_e[i](x_e)
            
-            x = x.permute(0, 2, 3, 1)
-            x_e = x_e.permute(0, 2, 3, 1)
+            x = x.permute(0, 2, 3, 1).contiguous()
+            x_e = x_e.permute(0, 2, 3, 1).contiguous()
             for blk in self.stages[i]:
                 x,x_e = blk(x,x_e)
-            x = x.permute(0, 3, 1, 2)
-            x_e = x_e.permute(0, 3, 1, 2)
+            x = x.permute(0, 3, 1, 2).contiguous()
+            x_e = x_e.permute(0, 3, 1, 2).contiguous()
             outs.append(x)
         return outs
 

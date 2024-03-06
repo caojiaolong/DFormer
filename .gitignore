@@ -160,5 +160,15 @@ cython_debug/
 #.idea/
 
 core.*
-./checkpoints
-./datasets
+checkpoints
+datasets
+output
+*_old*
+.history
+*.ipynb
+pyrightconfig.json
+train*.sh
+eval*.sh
+
+# temp ignore:
+models/decoders/near_far.py

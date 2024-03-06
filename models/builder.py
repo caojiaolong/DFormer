@@ -6,21 +6,21 @@ from utils.init_func import init_weight
 from utils.load_utils import load_pretrain
 from functools import partial
 
-from engine.logger import get_logger
+from utils.engine.logger import get_logger
 import warnings
 
-from mmcv.cnn import MODELS as MMCV_MODELS
-from mmcv.cnn.bricks.registry import ATTENTION as MMCV_ATTENTION
-from mmcv.utils import Registry
+# from mmcv.cnn import MODELS as MMCV_MODELS
+# from mmcv.cnn.bricks.registry import ATTENTION as MMCV_ATTENTION
+# from mmcv.utils import Registry
 
-MODELS = Registry('models', parent=MMCV_MODELS)
-ATTENTION = Registry('attention', parent=MMCV_ATTENTION)
+# MODELS = Registry('models', parent=MMCV_MODELS)
+# ATTENTION = Registry('attention', parent=MMCV_ATTENTION)
 
-BACKBONES = MODELS
-NECKS = MODELS
-HEADS = MODELS
-LOSSES = MODELS
-SEGMENTORS = MODELS
+# BACKBONES = MODELS
+# NECKS = MODELS
+# HEADS = MODELS
+# LOSSES = MODELS
+# SEGMENTORS = MODELS
 
 
 def build_backbone(cfg):
@@ -60,9 +60,10 @@ def build_segmentor(cfg, train_cfg=None, test_cfg=None):
 logger = get_logger()
 
 class EncoderDecoder(nn.Module):
-    def __init__(self, cfg=None, criterion=nn.CrossEntropyLoss(reduction='mean', ignore_index=255), norm_layer=nn.BatchNorm2d, single_GPU=False):
+    def __init__(self, cfg=None, criterion=nn.CrossEntropyLoss(reduction='mean', ignore_index=255), norm_layer=nn.BatchNorm2d, syncbn=False):
         super(EncoderDecoder, self).__init__()
         self.norm_layer = norm_layer
+        self.cfg = cfg
         
         if cfg.backbone == 'DFormer-Large':
             from .encoders.DFormer import DFormer_Large as backbone
@@ -77,11 +78,10 @@ class EncoderDecoder(nn.Module):
             from .encoders.DFormer import DFormer_Tiny as backbone
             self.channels=[32, 64, 128, 256]
 
-        if single_GPU:
-            print('single GPU')
-            norm_cfg=dict(type='BN', requires_grad=True)
-        else:
+        if syncbn:
             norm_cfg=dict(type='SyncBN', requires_grad=True)
+        else:
+            norm_cfg=dict(type='BN', requires_grad=True)
 
         if cfg.drop_path_rate is not None:
             self.backbone = backbone(drop_path_rate=cfg.drop_path_rate, norm_cfg = norm_cfg)
@@ -99,7 +99,8 @@ class EncoderDecoder(nn.Module):
         elif cfg.decoder == 'ham':
             logger.info('Using Ham Decoder')
             print(cfg.num_classes)
-            from .decoders.ham_head import LightHamHead as DecoderHead
+            # from .decoders.ham_head import LightHamHead as DecoderHead
+            from mmseg.models.decode_heads.ham_head import LightHamHead as DecoderHead
             self.decode_head = DecoderHead(in_channels=self.channels[1:], num_classes=cfg.num_classes, in_index=[1,2,3],norm_cfg=norm_cfg, channels=cfg.decoder_embed_dim)
             from .decoders.fcnhead import FCNHead
             if cfg.aux_rate!=0:
@@ -128,7 +129,16 @@ class EncoderDecoder(nn.Module):
         elif cfg.decoder == 'nl':
             logger.info('Using Decoder: nl+')
             from .decoders.nl_head import NLHead as Head
-            self.decode_head = Head(in_channels=self.channels[1:], in_index=[1,2,3],num_classes=cfg.num_classes, norm_cfg=dict(type='SyncBN', requires_grad=True),channels=512)
+            self.decode_head = Head(in_channels=self.channels[1:], in_index=[1,2,3],num_classes=cfg.num_classes, norm_cfg=norm_cfg,channels=512)
+            from .decoders.fcnhead import FCNHead
+            self.aux_index = 2
+            self.aux_rate = 0.4
+            self.aux_head = FCNHead(self.channels[2], cfg.num_classes, norm_layer=norm_layer)
+        elif cfg.decoder == 'nl_near_far':
+            logger.info('Using Decoder: nl_near_far')
+            # from .decoders.near_far import NLHead as Head
+            from mmseg.models.decode_heads.near_far import NLHead as Head
+            self.decode_head = Head(in_channels=self.channels[1:], in_index=[1,2,3],num_classes=cfg.num_classes, norm_cfg=norm_cfg,channels=512)
             from .decoders.fcnhead import FCNHead
             self.aux_index = 2
             self.aux_rate = 0.4
@@ -160,8 +170,12 @@ class EncoderDecoder(nn.Module):
         """Encode images with backbone and decode into a semantic segmentation
         map of the same size as input."""
         orisize = rgb.shape
+        # print('builder',rgb.shape,modal_x.shape)
         x = self.backbone(rgb, modal_x)
-        out = self.decode_head.forward(x)
+        if self.cfg.decoder == 'nl_near_far':
+            out = self.decode_head.forward(x, modal_x=modal_x)
+        else:
+            out = self.decode_head.forward(x)
         out = F.interpolate(out, size=orisize[-2:], mode='bilinear', align_corners=False)
         if self.aux_head:
             aux_fm = self.aux_head(x[self.aux_index])

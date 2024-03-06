@@ -1,32 +1,25 @@
-import os
 import pprint
 import sys
 import time
-from torch.utils.data import DataLoader
 import argparse
 from tqdm import tqdm
-from utils.dataloader.dataloader import ValPre
-from utils.pyt_utils import ensure_dir, link_file, load_model, parse_devices
-import importlib
-from utils.visualize import print_iou, show_img
 import torch
 import torch.nn as nn
-import torch.distributed as dist
 import torch.backends.cudnn as cudnn
 from torch.nn.parallel import DistributedDataParallel
 from utils.dataloader.dataloader import get_train_loader, get_val_loader
 from models.builder import EncoderDecoder as segmodel
 from utils.dataloader.RGBXDataset import RGBXDataset
-from utils.init_func import init_weight, group_weight
+
+# from utils.init_func import group_weight
+from utils.init_func import configure_optimizers
 from utils.lr_policy import WarmUpPolyLR
 from utils.engine.engine import Engine
 from utils.engine.logger import get_logger
 from utils.pyt_utils import all_reduce_tensor
-from utils.metric import hist_info, compute_score
 from tensorboardX import SummaryWriter
-import random
-import numpy as np
 from val_mm import evaluate, evaluate_msf
+from importlib import import_module
 
 # from eval import evaluate_mid
 
@@ -35,28 +28,73 @@ torch.backends.cudnn.benchmark = True
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--config", help="train config file path")
-parser.add_argument("--gpus", help="used gpu number")
+parser.add_argument("--gpus", default=2, type=int, help="used gpu number")
 # parser.add_argument('-d', '--devices', default='0,1', type=str)
 parser.add_argument("-v", "--verbose", default=False, action="store_true")
 parser.add_argument("--epochs", default=0)
 parser.add_argument("--show_image", "-s", default=False, action="store_true")
 parser.add_argument("--save_path", default=None)
 parser.add_argument("--checkpoint_dir")
+parser.add_argument("--continue_fpath")
+parser.add_argument("--sliding", default=False, action=argparse.BooleanOptionalAction)
+parser.add_argument("--compile", default=False, action=argparse.BooleanOptionalAction)
+parser.add_argument("--compile_mode", default="default")
+parser.add_argument("--syncbn", default=True, action=argparse.BooleanOptionalAction)
+parser.add_argument("--mst", default=True, action=argparse.BooleanOptionalAction)
+parser.add_argument("--amp", default=True, action=argparse.BooleanOptionalAction)
+parser.add_argument("--val_amp", default=True, action=argparse.BooleanOptionalAction)
 # parser.add_argument('--save_path', '-p', default=None)
 
 # os.environ['MASTER_PORT'] = '169710'
+torch.set_float32_matmul_precision("high")
+import torch._dynamo
+
+torch._dynamo.config.suppress_errors = True
+# torch._dynamo.config.automatic_dynamic_shapes = False
 
 with Engine(custom_parser=parser) as engine:
     args = parser.parse_args()
-    exec("from " + args.config + " import C as config")
+
+    config = getattr(import_module(args.config), "C")
+    # exec("from " + args.config + " import C as config")
     logger = get_logger(config.log_dir, config.log_file, rank=engine.local_rank)
+
+    # assert not (args.compile and args.syncbn), "syncbn is not supported in compile mode"
+    if not args.compile and args.compile_mode != "default":
+        logger.warning(
+            "compile_mode is only valid when compile is enabled, ignoring compile_mode"
+        )
 
     cudnn.benchmark = True
 
     train_loader, train_sampler = get_train_loader(engine, RGBXDataset, config)
 
+    if args.gpus == 2:
+        if args.mst and args.compile and args.compile_mode == "reduce-overhead":
+            val_dl_factor = 0.25
+        elif args.mst and not args.val_amp:
+            val_dl_factor = 1.5
+        elif args.mst and args.val_amp:
+            val_dl_factor = 1.3
+        else:
+            val_dl_factor = 2
+    elif args.gpus == 4:
+        if args.mst and args.compile and args.compile_mode == "reduce-overhead":
+            val_dl_factor = 0.25
+        elif args.mst and not args.val_amp:
+            val_dl_factor = 1.5
+        elif args.mst and args.val_amp:
+            val_dl_factor = 4
+        else:
+            val_dl_factor = 2
+    else:
+        val_dl_factor = 1.5
+
     val_loader, val_sampler = get_val_loader(
-        engine, RGBXDataset, config, int(args.gpus)
+        engine,
+        RGBXDataset,
+        config,
+        val_batch_size=int(config.batch_size * val_dl_factor),
     )
     logger.info(f"val dataset len:{len(val_loader)*int(args.gpus)}")
 
@@ -70,18 +108,24 @@ with Engine(custom_parser=parser) as engine:
         pp = pprint.PrettyPrinter(indent=4)
         logger.info("config: \n" + pp.pformat(config))
 
+    logger.info("args parsed:")
+    for k in args.__dict__:
+        logger.info(k + ": " + str(args.__dict__[k]))
+
     criterion = nn.CrossEntropyLoss(reduction="mean", ignore_index=config.background)
 
-    if engine.distributed:
+    if args.syncbn:
         BatchNorm2d = nn.SyncBatchNorm
+        logger.info("using syncbn")
     else:
         BatchNorm2d = nn.BatchNorm2d
+        logger.info("using regular bn")
 
     model = segmodel(
         cfg=config,
         criterion=criterion,
         norm_layer=BatchNorm2d,
-        single_GPU=(not engine.distributed),
+        syncbn=args.syncbn,
     )
     # weight=torch.load('checkpoints/NYUv2_DFormer_Large.pth')['model']
     # w_list=list(weight.keys())
@@ -94,8 +138,9 @@ with Engine(custom_parser=parser) as engine:
     if engine.distributed:
         base_lr = config.lr
 
-    params_list = []
-    params_list = group_weight(params_list, model, BatchNorm2d, base_lr)
+    # params_list = []
+    # params_list = group_weight(params_list, model, BatchNorm2d, base_lr)
+    params_list = configure_optimizers(model, base_lr, config.weight_decay)
 
     if config.optimizer == "AdamW":
         optimizer = torch.optim.AdamW(
@@ -130,7 +175,7 @@ with Engine(custom_parser=parser) as engine:
                 model,
                 device_ids=[engine.local_rank],
                 output_device=engine.local_rank,
-                find_unused_parameters=True,
+                find_unused_parameters=False,
             )
     else:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -166,15 +211,30 @@ with Engine(custom_parser=parser) as engine:
     #                                 config.norm_std, None,
     #                                 config.eval_scale_array, config.eval_flip,
     #                                 all_dev, config,args.verbose, args.save_path,args.show_image)
-
+    uncompiled_model = model
+    if args.compile:
+        compiled_model = torch.compile(
+            model, backend="inductor", mode=args.compile_mode
+        )
+    else:
+        compiled_model = model
     miou, best_miou = 0.0, 0.0
+
+    scaler = torch.cuda.amp.GradScaler()
+
     for epoch in range(engine.state.epoch, config.nepochs + 1):
+        model = compiled_model
         model.train()
         if engine.distributed:
             train_sampler.set_epoch(epoch)
         bar_format = "{desc}[{elapsed}<{remaining},{rate_fmt}]"
         pbar = tqdm(
-            range(config.niters_per_epoch), file=sys.stdout, bar_format=bar_format
+            range(config.niters_per_epoch),
+            file=sys.stdout,
+            bar_format=bar_format,
+            # range(5),
+            # file=sys.stdout,
+            # bar_format=bar_format,
         )
         dataloader = iter(train_loader)
 
@@ -183,7 +243,8 @@ with Engine(custom_parser=parser) as engine:
         for idx in pbar:
             engine.update_iteration(epoch, idx)
 
-            minibatch = dataloader.next()
+            # minibatch = dataloader.next()
+            minibatch = next(dataloader)
             imgs = minibatch["data"]
             gts = minibatch["label"]
             modal_xs = minibatch["modal_x"]
@@ -192,15 +253,33 @@ with Engine(custom_parser=parser) as engine:
             gts = gts.cuda(non_blocking=True)
             modal_xs = modal_xs.cuda(non_blocking=True)
 
-            loss = model(imgs, modal_xs, gts)
+            if args.amp:
+                with torch.autocast(device_type="cuda", dtype=torch.float16):
+                    loss = model(imgs, modal_xs, gts)
+            else:
+                loss = model(imgs, modal_xs, gts)
 
             # reduce the whole loss over multi-gpu
             if engine.distributed:
                 reduce_loss = all_reduce_tensor(loss, world_size=engine.world_size)
 
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            if args.amp:
+                # Scales loss. Calls ``backward()`` on scaled loss to create scaled gradients.
+                scaler.scale(loss).backward()
+                # otherwise, optimizer.step() is skipped.
+                scaler.step(optimizer)
+                # Updates the scale for next iteration.
+                scaler.update()
+                optimizer.zero_grad(
+                    set_to_none=True
+                )  # TODO: check if set_to_none=True impact the performance
+            else:
+                optimizer.zero_grad()
+                loss.backward()
+                for name, param in model.named_parameters():
+                    if param.grad is None:
+                        print(name)
+                optimizer.step()
 
             current_idx = (epoch - 1) * config.niters_per_epoch + idx
             lr = lr_policy.get_lr(current_idx)
@@ -237,22 +316,62 @@ with Engine(custom_parser=parser) as engine:
         logger.info(print_str)
 
         if (
-            epoch % 1 == 0 and epoch > int(config.checkpoint_start_epoch)
-        ) or epoch == 1:
+            (epoch % 1 == 0 and epoch > int(config.checkpoint_start_epoch))
+            or epoch == 1
+            or epoch % 10 == 0
+        ):
+            if args.compile and args.mst and (not args.sliding):
+                model = uncompiled_model
             torch.cuda.empty_cache()
+            if args.compile and args.mst and (not args.sliding):
+                model = torch.compile(model, disable=True)
             if engine.distributed:
                 with torch.no_grad():
                     model.eval()
                     device = torch.device("cuda")
-                    all_metrics = evaluate_msf(
-                        model,
-                        val_loader,
-                        config,
-                        device,
-                        [0.5, 0.75, 1.0, 1.25, 1.5],
-                        True,
-                        engine,
-                    )
+                    if args.val_amp:
+                        with torch.autocast(device_type="cuda", dtype=torch.float16):
+                            if args.mst:
+                                all_metrics = evaluate_msf(
+                                    model,
+                                    val_loader,
+                                    config,
+                                    device,
+                                    [0.5, 0.75, 1.0, 1.25, 1.5],
+                                    True,
+                                    engine,
+                                    sliding=args.sliding,
+                                )
+                            else:
+                                all_metrics = evaluate(
+                                    model,
+                                    val_loader,
+                                    config,
+                                    device,
+                                    engine,
+                                    sliding=args.sliding,
+                                )
+                    else:
+                        if args.mst:
+                            all_metrics = evaluate_msf(
+                                model,
+                                val_loader,
+                                config,
+                                device,
+                                [0.5, 0.75, 1.0, 1.25, 1.5],
+                                True,
+                                engine,
+                                sliding=args.sliding,
+                            )
+                        else:
+                            all_metrics = evaluate(
+                                model,
+                                val_loader,
+                                config,
+                                device,
+                                engine,
+                                sliding=args.sliding,
+                            )
                     if engine.local_rank == 0:
                         metric = all_metrics[0]
                         for other_metric in all_metrics[1:]:
@@ -274,15 +393,49 @@ with Engine(custom_parser=parser) as engine:
                 with torch.no_grad():
                     model.eval()
                     device = torch.device("cuda")
-                    metric = evaluate_msf(
-                        model,
-                        val_loader,
-                        config,
-                        device,
-                        [0.5, 0.75, 1.0, 1.25, 1.5],
-                        True,
-                        engine,
-                    )
+                    if args.val_amp:
+                        with torch.autocast(device_type="cuda", dtype=torch.float16):
+                            if args.mst:
+                                metric = evaluate_msf(
+                                    model,
+                                    val_loader,
+                                    config,
+                                    device,
+                                    [0.5, 0.75, 1.0, 1.25, 1.5],
+                                    True,
+                                    engine,
+                                    sliding=args.sliding,
+                                )
+                            else:
+                                metric = evaluate(
+                                    model,
+                                    val_loader,
+                                    config,
+                                    device,
+                                    engine,
+                                    sliding=args.sliding,
+                                )
+                    else:
+                        if args.mst:
+                            metric = evaluate_msf(
+                                model,
+                                val_loader,
+                                config,
+                                device,
+                                [0.5, 0.75, 1.0, 1.25, 1.5],
+                                True,
+                                engine,
+                                sliding=args.sliding,
+                            )
+                        else:
+                            metric = evaluate(
+                                model,
+                                val_loader,
+                                config,
+                                device,
+                                engine,
+                                sliding=args.sliding,
+                            )
                     ious, miou = metric.compute_iou()
                     acc, macc = metric.compute_pixel_acc()
                     f1, mf1 = metric.compute_f1()
