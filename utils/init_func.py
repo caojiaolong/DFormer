@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
-from models.encoders.DFormer import LayerNorm
+# from models.encoders.DFormer import LayerNorm
+# from mmseg.models.decode_heads.mask_attention_cot import LayerNorm as LayerNorm1
 
 
 def __init_weight(feature, conv_init, norm_layer, bn_eps, bn_momentum, **kwargs):
@@ -44,7 +45,7 @@ def group_weight(weight_group, module, norm_layer, lr):
             or isinstance(m, nn.BatchNorm3d)
             or isinstance(m, nn.GroupNorm)
             or isinstance(m, nn.LayerNorm)
-            or isinstance(m, LayerNorm)
+            # or isinstance(m, LayerNorm)
         ):
             if m.weight is not None:
                 group_no_decay.append(m.weight)
@@ -120,7 +121,7 @@ def configure_optimizers(model, lr, weight_decay):
                 decay.add(fpn)
             elif "depth_scale" in fpn:
                 # special case depth norm scaling parameters in the T5 model
-                decay.add(fpn)
+                no_decay.add(fpn)
 
     # special case the position embedding parameter in the root GPT module as not decayed
     # no_decay.add("pos_emb")

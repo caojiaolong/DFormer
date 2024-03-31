@@ -84,7 +84,12 @@ def evaluate(model, dataloader, config, device, engine, save_dir=None, sliding=F
     n_classes = config.num_classes
     metrics = Metrics(n_classes, config.background, device)
 
-    for minibatch in tqdm(dataloader, dynamic_ncols=True):
+    for idx, minibatch in enumerate(dataloader):
+        if ((idx + 1) % int(len(dataloader) * 0.5) == 0 or idx == 0) and (
+            (engine.distributed and (engine.local_rank == 0))
+            or (not engine.distributed)
+        ):
+            print(f"Validation Iter: {idx + 1} / {len(dataloader)}")
         images = minibatch["data"]
         labels = minibatch["label"]
         modal_xs = minibatch["modal_x"]
@@ -264,7 +269,12 @@ def evaluate_msf(
     n_classes = config.num_classes
     metrics = Metrics(n_classes, config.background, device)
 
-    for minibatch in tqdm(dataloader):
+    for idx, minibatch in enumerate(dataloader):
+        if ((idx + 1) % int(len(dataloader) * 0.5) == 0 or idx == 0) and (
+            (engine.distributed and (engine.local_rank == 0))
+            or (not engine.distributed)
+        ):
+            print(f"Validation Iter: {idx + 1} / {len(dataloader)}")
         images = minibatch["data"]
         labels = minibatch["label"]
         modal_xs = minibatch["modal_x"]
@@ -276,10 +286,10 @@ def evaluate_msf(
 
         for scale in scales:
             new_H, new_W = int(scale * H), int(scale * W)
-            # new_H, new_W = (
-            #     int(math.ceil(new_H / 32)) * 32,
-            #     int(math.ceil(new_W / 32)) * 32,
-            # )
+            new_H, new_W = (
+                int(math.ceil(new_H / 32)) * 32,
+                int(math.ceil(new_W / 32)) * 32,
+            )
             scaled_images = [
                 F.interpolate(
                     img, size=(new_H, new_W), mode="bilinear", align_corners=True

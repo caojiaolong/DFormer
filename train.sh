@@ -8,7 +8,7 @@ export CUDA_VISIBLE_DEVICES="0,1"
 export TORCHDYNAMO_VERBOSE=1
 
 PYTHONPATH="$(dirname $0)/..":$PYTHONPATH \
-torchrun  \
+python -m torch.distributed.launch  \
     --nnodes=$NNODES \
     --node_rank=$NODE_RANK \
     --master_addr=$MASTER_ADDR \
@@ -23,7 +23,8 @@ torchrun  \
     --mst \
     --compile_mode="default" \
     --no-amp \
-    --val_amp 
+    --val_amp \
+    --no-use_seed
 
 
 # config for DFormers on NYUDepthv2 

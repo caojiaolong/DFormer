@@ -60,7 +60,7 @@ def build_segmentor(cfg, train_cfg=None, test_cfg=None):
 logger = get_logger()
 
 class EncoderDecoder(nn.Module):
-    def __init__(self, cfg=None, criterion=nn.CrossEntropyLoss(reduction='mean', ignore_index=255), norm_layer=nn.BatchNorm2d, syncbn=False):
+    def __init__(self, cfg=None, criterion=nn.CrossEntropyLoss(reduction='none', ignore_index=255), norm_layer=nn.BatchNorm2d, syncbn=False):
         super(EncoderDecoder, self).__init__()
         self.norm_layer = norm_layer
         self.cfg = cfg
@@ -99,8 +99,8 @@ class EncoderDecoder(nn.Module):
         elif cfg.decoder == 'ham':
             logger.info('Using Ham Decoder')
             print(cfg.num_classes)
-            # from .decoders.ham_head import LightHamHead as DecoderHead
-            from mmseg.models.decode_heads.ham_head import LightHamHead as DecoderHead
+            from .decoders.ham_head import LightHamHead as DecoderHead
+            # from mmseg.models.decode_heads.ham_head import LightHamHead as DecoderHead
             self.decode_head = DecoderHead(in_channels=self.channels[1:], num_classes=cfg.num_classes, in_index=[1,2,3],norm_cfg=norm_cfg, channels=cfg.decoder_embed_dim)
             from .decoders.fcnhead import FCNHead
             if cfg.aux_rate!=0:
@@ -173,12 +173,12 @@ class EncoderDecoder(nn.Module):
         # print('builder',rgb.shape,modal_x.shape)
         x = self.backbone(rgb, modal_x)
         if self.cfg.decoder == 'nl_near_far':
-            out = self.decode_head.forward(x, modal_x=modal_x)
+            out = self.decode_head.forward(x[0], modal_x=modal_x)
         else:
-            out = self.decode_head.forward(x)
+            out = self.decode_head.forward(x[0])
         out = F.interpolate(out, size=orisize[-2:], mode='bilinear', align_corners=False)
         if self.aux_head:
-            aux_fm = self.aux_head(x[self.aux_index])
+            aux_fm = self.aux_head(x[0][self.aux_index])
             aux_fm = F.interpolate(aux_fm, size=orisize[2:], mode='bilinear', align_corners=False)
             return out, aux_fm
         return out
@@ -190,8 +190,8 @@ class EncoderDecoder(nn.Module):
         else:
             out = self.encode_decode(rgb, modal_x)
         if label is not None:
-            loss = self.criterion(out, label.long())
+            loss = self.criterion(out, label.long())[label.long() != self.cfg.background].mean()
             if self.aux_head:
-                loss += self.aux_rate * self.criterion(aux_fm, label.long())
+                loss += self.aux_rate * self.criterion(aux_fm, label.long())[label.long() != self.cfg.background].mean()
             return loss
         return out

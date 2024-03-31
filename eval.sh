@@ -25,8 +25,8 @@ torchrun  \
     --syncbn \
     --mst \
     --compile_mode="reduce-overhead" \
-    --no-amp \
-    --continue_fpath="checkpoints/NYUDepthv2_DFormer-Large_20240305-212758/epoch-400_miou_56.96.pth" 
+    --amp \
+    --continue_fpath="checkpoints/trained/NYUv2_DFormer_Large.pth" 
 
 
 # choose the dataset and DFormer for evaluating 

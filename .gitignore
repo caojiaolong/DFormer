@@ -172,3 +172,4 @@ eval*.sh
 
 # temp ignore:
 models/decoders/near_far.py
+**/*_temp*

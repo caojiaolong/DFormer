@@ -41,7 +41,7 @@ class LayerNorm(nn.Module):
             u = x.mean(1, keepdim=True)
             s = (x - u).pow(2).mean(1, keepdim=True)
             x = (x - u) / torch.sqrt(s + self.eps)
-            x = self.weight[:, None, None].contiguous() * x + self.bias[:, None, None].contiguous()
+            x = self.weight[:, None, None] * x + self.bias[:, None, None]
             return x
 
 
@@ -58,9 +58,9 @@ class MLP(nn.Module):
     def forward(self, x):
         x = self.norm(x)
         x = self.fc1(x)
-        x = x.permute(0, 3, 1, 2).contiguous()
+        x = x.permute(0, 3, 1, 2)
         x = self.pos(x) + x
-        x = x.permute(0, 2, 3, 1).contiguous()
+        x = x.permute(0, 2, 3, 1)
         x = self.act(x)
         x = self.fc2(x)
 
@@ -105,32 +105,32 @@ class attention(nn.Module):
         x_e = self.norm_e(x_e)
         if self.window != 0:
             short_cut = torch.cat([x,x_e],dim=3)##########
-            short_cut = short_cut.permute(0,3,1,2).contiguous()#############
+            short_cut = short_cut.permute(0,3,1,2)#############
 
         q = self.q(x)   
         cutted_x = self.q_cut(x)     
-        x = self.l(x).permute(0, 3, 1, 2).contiguous()
+        x = self.l(x).permute(0, 3, 1, 2)
         x = self.act(x)
             
         a = self.conv(x)
-        a = a.permute(0, 2, 3, 1).contiguous()
+        a = a.permute(0, 2, 3, 1)
         a = self.a(a)
 
         if self.window != 0:
-            b = x.permute(0, 2, 3, 1).contiguous()
+            b = x.permute(0, 2, 3, 1)
             kv = self.kv(b)
-            kv = kv.reshape(B, H*W, 2, self.num_head, C // self.num_head // 2).permute(2, 0, 3, 1, 4).contiguous()
+            kv = kv.reshape(B, H*W, 2, self.num_head, C // self.num_head // 2).permute(2, 0, 3, 1, 4)
             k, v = kv.unbind(0)
-            short_cut = self.pool(short_cut).permute(0,2,3,1).contiguous()
+            short_cut = self.pool(short_cut).permute(0,2,3,1)
             short_cut = self.short_cut_linear(short_cut)
-            short_cut = short_cut.reshape(B, -1, self.num_head, C // self.num_head // 2).permute(0, 2, 1, 3).contiguous()
+            short_cut = short_cut.reshape(B, -1, self.num_head, C // self.num_head // 2).permute(0, 2, 1, 3)
             m = short_cut
-            attn = (m * (C // self.num_head // 2) ** -0.5) @ (k.transpose(-2, -1).contiguous())
+            attn = (m * (C // self.num_head // 2) ** -0.5) @ k.transpose(-2, -1) 
             attn = attn.softmax(dim=-1)
-            attn = (attn @ v).reshape(B, self.num_head, self.window, self.window, C // self.num_head // 2).permute(0, 1, 4, 2, 3).reshape(B, C // 2, self.window, self.window).contiguous()
-            attn = F.interpolate(attn, (H, W), mode='bilinear', align_corners=False).permute(0, 2, 3, 1).contiguous()
+            attn = (attn @ v).reshape(B, self.num_head, self.window, self.window, C // self.num_head // 2).permute(0, 1, 4, 2, 3).reshape(B, C // 2, self.window, self.window)
+            attn = F.interpolate(attn, (H, W), mode='bilinear', align_corners=False).permute(0, 2, 3, 1)
         
-        x_e = self.e_back(self.e_conv(self.e_fore(x_e).permute(0, 3, 1, 2)).permute(0, 2, 3, 1)).contiguous()
+        x_e = self.e_back(self.e_conv(self.e_fore(x_e).permute(0, 3, 1, 2)).permute(0, 2, 3, 1))
         cutted_x = cutted_x * x_e
         x = q * a
 
@@ -251,7 +251,7 @@ class DFormer(BaseModule):
 
     def init_weights(self,pretrained):
        
-        _state_dict=torch.load(pretrained, map_location=torch.device('cpu'))
+        _state_dict=torch.load(pretrained)
         if 'state_dict_ema' in _state_dict.keys():
             _state_dict=_state_dict['state_dict_ema']
         else:
@@ -287,14 +287,14 @@ class DFormer(BaseModule):
             x = self.downsample_layers[i](x)
             x_e = self.downsample_layers_e[i](x_e)
            
-            x = x.permute(0, 2, 3, 1).contiguous()
-            x_e = x_e.permute(0, 2, 3, 1).contiguous()
+            x = x.permute(0, 2, 3, 1)
+            x_e = x_e.permute(0, 2, 3, 1)
             for blk in self.stages[i]:
                 x,x_e = blk(x,x_e)
-            x = x.permute(0, 3, 1, 2).contiguous()
-            x_e = x_e.permute(0, 3, 1, 2).contiguous()
+            x = x.permute(0, 3, 1, 2)
+            x_e = x_e.permute(0, 3, 1, 2)
             outs.append(x)
-        return outs
+        return outs,None
 
 def DFormer_Tiny(pretrained=False, **kwargs):   # 81.5
     model = DFormer(dims=[32, 64, 128, 256], mlp_ratios=[8, 8, 4, 4], depths=[3, 3, 5, 2], num_heads=[1, 2, 4, 8], windows=[0, 7, 7, 7], **kwargs)
