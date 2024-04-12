@@ -36,11 +36,19 @@ class RGBXDataset(data.Dataset):
         else:
             item_name = self._file_names[index]
 
-        item_name=item_name.split('/')[1].split(self._rgb_format)[0]
-      
+        temp_index=item_name.find("/")
+
+        item_name=item_name[temp_index+1:].split(self._rgb_format)[0]
+        # item_name = item_name.split(" ")
+        # item_name[-1]=item_name[-1].replace("\n","")
+            
         rgb_path = os.path.join(self._rgb_path, item_name.replace('.jpg','').replace('.png','') + self._rgb_format)
         x_path = os.path.join(self._x_path, item_name.replace('.jpg','').replace('.png','')  + self._x_format)
         gt_path = os.path.join(self._gt_path, item_name.replace('.jpg','').replace('.png','')  + self._gt_format)
+
+        # rgb_path = os.path.join(self._rgb_path, item_name[0].replace("rgb/",""))
+        # x_path = os.path.join(self._x_path, item_name[1].replace("depth/",""))
+        # gt_path = os.path.join(self._gt_path, item_name[2].replace("label/",""))
 
         rgb = self._open_image(rgb_path, cv2.COLOR_BGR2RGB)
         # rgb = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)

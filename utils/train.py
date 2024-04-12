@@ -371,7 +371,7 @@ with Engine(custom_parser=parser) as engine:
                     + f"lr={lr:.4e} loss={loss:.4f} total_loss={(sum_loss / (idx + 1)):.4f}"
                 )
 
-            if ((idx + 1) % int((config.niters_per_epoch) * 0.2) == 0 or idx == 0) and (
+            if ((idx + 1) % int((config.niters_per_epoch) * 0.1) == 0 or idx == 0) and (
                 (engine.distributed and (engine.local_rank == 0))
                 or (not engine.distributed)
             ):

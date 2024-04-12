@@ -145,6 +145,7 @@ with Engine(custom_parser=parser) as engine:
                         acc, macc = metric.compute_pixel_acc()
                         f1, mf1 = metric.compute_f1()
                         logger.info(f"miou:{miou}, macc:{macc}, mf1:{mf1}")
+                        logger.info(f"ious:{ious}")
             elif not engine.distributed:
                 with torch.no_grad():
                     model.eval()
@@ -173,6 +174,7 @@ with Engine(custom_parser=parser) as engine:
                     acc, macc = metric.compute_pixel_acc()
                     f1, mf1 = metric.compute_f1()
                     logger.info(f"miou:{miou}, macc:{macc}, mf1:{mf1}")
+                    logger.info(f"ious:{ious}")
     else:
         if engine.distributed:
             with torch.no_grad():
@@ -206,6 +208,7 @@ with Engine(custom_parser=parser) as engine:
                     acc, macc = metric.compute_pixel_acc()
                     f1, mf1 = metric.compute_f1()
                     logger.info(f"miou:{miou}, macc:{macc}, mf1:{mf1}")
+                    logger.info(f"ious:{ious}")
         elif not engine.distributed:
             with torch.no_grad():
                 model.eval()
@@ -234,4 +237,5 @@ with Engine(custom_parser=parser) as engine:
                 acc, macc = metric.compute_pixel_acc()
                 f1, mf1 = metric.compute_f1()
                 logger.info(f"miou:{miou}, macc:{macc}, mf1:{mf1}")
+                logger.info(f"ious:{ious}")
     logger.info("end testing")
